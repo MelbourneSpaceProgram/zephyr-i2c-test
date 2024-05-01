@@ -1,80 +1,88 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
+ * Copyright (c) 2016 Intel Corporation
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <stdio.h>
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/sensor.h>
-#include <zephyr/logging/log.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/gpio.h>
 
-#include <app/drivers/blink.h>
+/* 1000 msec = 1 sec */
+#define SLEEP_TIME_MS   1000
 
-#include <app_version.h>
+/* The devicetree node identifier for the "led0" alias. */
+#define LED0_NODE DT_ALIAS(led0)
+#define I2C_DEV_NODE DT_NODELABEL(i2c1)
 
-LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
-
-#define BLINK_PERIOD_MS_STEP 100U
-#define BLINK_PERIOD_MS_MAX  1000U
+/*
+ * A build error on this line means your board is unsupported.
+ * See the sample documentation for information on how to fix this.
+ */
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct device *const i2c_dev = DEVICE_DT_GET(I2C_DEV_NODE);
+uint32_t i2c_cfg = I2C_SPEED_SET(I2C_SPEED_STANDARD) | I2C_MODE_CONTROLLER;
 
 int main(void)
 {
 	int ret;
-	unsigned int period_ms = BLINK_PERIOD_MS_MAX;
-	const struct device *sensor, *blink;
-	struct sensor_value last_val = { 0 }, val;
+	bool led_state = true;
 
-	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
+	//i2c stuff
+	unsigned char i2c_data [10] = "i2c data\n";
+	uint32_t i2c_cfg_tmp;
+	uint16_t i2c_addr_slave = 0x06;
 
-	sensor = DEVICE_DT_GET(DT_NODELABEL(example_sensor));
-	if (!device_is_ready(sensor)) {
-		LOG_ERR("Sensor not ready");
+	//set up led
+	if (!gpio_is_ready_dt(&led)) {
 		return 0;
 	}
 
-	blink = DEVICE_DT_GET(DT_NODELABEL(blink_led));
-	if (!device_is_ready(blink)) {
-		LOG_ERR("Blink LED not ready");
-		return 0;
-	}
-
-	ret = blink_off(blink);
+	ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
 	if (ret < 0) {
-		LOG_ERR("Could not turn off LED (%d)", ret);
 		return 0;
 	}
 
-	printk("Use the sensor to change LED blinking period\n");
+	//set up i2c
+	if (!device_is_ready(i2c_dev)) {
+		printf("I2C device is not ready\n");
+		return 0;
+	}
+
+	/* 1. Verify i2c_configure() */
+	if (i2c_configure(i2c_dev, i2c_cfg)) {
+		printf("I2C config failed\n");
+		return 0;
+	}
+
+	/* 2. Verify i2c_get_config() */
+	if (i2c_get_config(i2c_dev, &i2c_cfg_tmp)) {
+		printf("I2C get_config failed\n");
+		return 0;
+	}
+	if (i2c_cfg != i2c_cfg_tmp) {
+		printf("I2C get_config returned invalid config\n");
+		return 0;
+	}
+
 
 	while (1) {
-		ret = sensor_sample_fetch(sensor);
+		// toggle LED
+		ret = gpio_pin_toggle_dt(&led);
 		if (ret < 0) {
-			LOG_ERR("Could not fetch sample (%d)", ret);
 			return 0;
 		}
 
-		ret = sensor_channel_get(sensor, SENSOR_CHAN_PROX, &val);
-		if (ret < 0) {
-			LOG_ERR("Could not get sample (%d)", ret);
-			return 0;
+		led_state = !led_state;
+		printf("LED state: %s\n", led_state ? "ON" : "OFF");
+
+		//send i2c
+		if (i2c_write(i2c_dev, i2c_data, 9, i2c_addr_slave)) {
+			printf("Fail to send i2c\n");
 		}
 
-		if ((last_val.val1 == 0) && (val.val1 == 1)) {
-			if (period_ms == 0U) {
-				period_ms = BLINK_PERIOD_MS_MAX;
-			} else {
-				period_ms -= BLINK_PERIOD_MS_STEP;
-			}
-
-			printk("Proximity detected, setting LED period to %u ms\n",
-			       period_ms);
-			blink_set_period_ms(blink, period_ms);
-		}
-
-		last_val = val;
-
-		k_sleep(K_MSEC(100));
+		k_msleep(SLEEP_TIME_MS);
 	}
-
 	return 0;
 }
-
